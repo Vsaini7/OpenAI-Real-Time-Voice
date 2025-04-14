@@ -1,41 +1,59 @@
 import { useEffect, useState } from "react";
 
-const functionDescription = `
-Call this function when a user asks for a color palette.
-`;
+
+
+const colorPaletteTool = {
+  type: "function",
+  name: "display_color_palette",
+  description: `Call this function when a user asks for a color palette.`,
+  parameters: {
+    type: "object",
+    strict: true,
+    properties: {
+      theme: {
+        type: "string",
+        description: "Description of the theme for the color scheme.",
+      },
+      colors: {
+        type: "array",
+        description: "Array of five hex color codes based on the theme.",
+        items: {
+          type: "string",
+          description: "Hex color code",
+        },
+      },
+    },
+    required: ["theme", "colors"],
+  },
+};
+
+
+const retrievalTool = {
+  type: "function",
+  name: "retrieve_documents",
+  description: "Call this to retrieve internal knowledge base documents based on a user query, when user asks about Saving Account or Credit card.",
+  parameters: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description: "The question or topic to search for in the internal documents.",
+      },
+    },
+    required: ["query"],
+  },
+};
 
 const sessionUpdate = {
   type: "session.update",
   session: {
-    tools: [
-      {
-        type: "function",
-        name: "display_color_palette",
-        description: functionDescription,
-        parameters: {
-          type: "object",
-          strict: true,
-          properties: {
-            theme: {
-              type: "string",
-              description: "Description of the theme for the color scheme.",
-            },
-            colors: {
-              type: "array",
-              description: "Array of five hex color codes based on the theme.",
-              items: {
-                type: "string",
-                description: "Hex color code",
-              },
-            },
-          },
-          required: ["theme", "colors"],
-        },
-      },
-    ],
+    tools: [colorPaletteTool, retrievalTool],
     tool_choice: "auto",
+    
   },
 };
+
+
 
 function FunctionCallOutput({ functionCallOutput }) {
   const { theme, colors } = JSON.parse(functionCallOutput.arguments);

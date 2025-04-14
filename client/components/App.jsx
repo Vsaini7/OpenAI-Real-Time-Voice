@@ -11,6 +11,7 @@ export default function App() {
   const peerConnection = useRef(null);
   const audioElement = useRef(null);
 
+  // START SESSION: Establish connection with OpenAI Realtime API
   async function startSession() {
     // Get a session token for OpenAI Realtime API
     const tokenResponse = await fetch("/token");
@@ -56,10 +57,23 @@ export default function App() {
     };
     await pc.setRemoteDescription(answer);
 
+    // Update session instructions if the realtime client is available.
+    // (Replace "client" with your realtime client instance, if available.)
+    if (typeof client !== "undefined" && client.updateSession) {
+      client.updateSession({
+        instructions:
+          "Answer only using the retrieved documents from our knowledge base. If no relevant document is found, respond with 'I cannot answer.'",
+      });
+    } else {
+      console.warn(
+        "Realtime client not defined. Make sure to update session instructions if possible."
+      );
+    }
+
     peerConnection.current = pc;
   }
 
-  // Stop current session, clean up peer connection and data channel
+  // STOP SESSION: Clean up the connection
   function stopSession() {
     if (dataChannel) {
       dataChannel.close();
@@ -80,58 +94,169 @@ export default function App() {
     peerConnection.current = null;
   }
 
-  // Send a message to the model
+  // SEND A MESSAGE TO THE MODEL VIA THE DATA CHANNEL
   function sendClientEvent(message) {
     if (dataChannel) {
       const timestamp = new Date().toLocaleTimeString();
       message.event_id = message.event_id || crypto.randomUUID();
 
-      // send event before setting timestamp since the backend peer doesn't expect this field
+      // Send the event (the backend peer doesn't expect the timestamp, so send it first)
       dataChannel.send(JSON.stringify(message));
 
-      // if guard just in case the timestamp exists by miracle
+      // If the timestamp is not already set (guard just in case), set it.
       if (!message.timestamp) {
         message.timestamp = timestamp;
       }
       setEvents((prev) => [message, ...prev]);
     } else {
-      console.error(
-        "Failed to send message - no data channel available",
-        message,
-      );
+      console.error("Failed to send message - no data channel available", message);
     }
   }
 
-  // Send a text message to the model
-  function sendTextMessage(message) {
-    const event = {
-      type: "conversation.item.create",
-      item: {
-        type: "message",
-        role: "user",
-        content: [
-          {
-            type: "input_text",
-            text: message,
-          },
-        ],
-      },
-    };
+  // SEND TEXT MESSAGE: This function is now async so we can use await
+  async function sendTextMessage(message) {
+    // Prepend instruction for every query
+  const instruction = "Answer only using the retrieved documents from our knowledge base. If no relevant document is found, respond with 'I cannot answer.'";
+  const fullMessage = `${instruction}\n\n${message}`;
 
-    sendClientEvent(event);
-    sendClientEvent({ type: "response.create" });
+  // 1. Send the user message (with the instruction prepended)
+  const event = {
+    type: "conversation.item.create",
+    item: {
+      type: "message",
+      role: "user",
+      content: [
+        {
+          type: "input_text",
+          text: fullMessage,
+        },
+      ],
+    },
+  };
+  sendClientEvent(event);
+
+  // 2. Force retrieval from Python backend
+  const response = await fetch("http://localhost:5000/retrieve", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query: message }),
+  });
+  const retrievedDocs = await response.text();
+
+  // 3. Send tool response
+  const toolResponseEvent = {
+    type: "tool_response",
+    tool: { name: "retrieve_documents", result: retrievedDocs },
+    tool_call_id: crypto.randomUUID(),
+  };
+  sendClientEvent(toolResponseEvent);
+
+  // 4. Trigger response generation
+  sendClientEvent({ type: "response.create" });
+
   }
 
-  // Attach event listeners to the data channel when a new one is created
+  // ATTACH EVENT LISTENERS: Listen for events from the data channel
   useEffect(() => {
     if (dataChannel) {
-      // Append new server events to the list
-      dataChannel.addEventListener("message", (e) => {
+      dataChannel.addEventListener("message", async (e) => {
+        console.log("[DEBUG] Raw message received:", e.data);
         const event = JSON.parse(e.data);
+        // NEW: Catch GPT function calls embedded in response.done
+if (
+  event.type === "response.done" &&
+  event.response?.output?.length > 0
+) {
+  const outputs = event.response.output;
+
+  outputs.forEach(async (output) => {
+    if (
+      output.type === "function_call" &&
+      output.name === "retrieve_documents"
+    ) {
+      console.log("[DEBUG] retrieve_documents function_call received in response.done:", output);
+
+      try {
+        const args = JSON.parse(output.arguments);
+        const query = args.query;
+        console.log("[DEBUG] Extracted query:", query);
+
+        const response = await fetch("http://localhost:5000/retrieve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query }),
+        });
+
+        if (!response.ok) throw new Error(`Backend error: ${response.status}`);
+        const result = await response.text();
+        console.log("[DEBUG] RAG backend returned:", result);
+
+        const responseEvent = {
+          type: "response.create",
+          response: {
+            instructions: result, // this will be spoken by GPT-4o
+          },
+        };
+        sendClientEvent(responseEvent);
+        
+      } catch (error) {
+        console.error("❌ Error calling retrieve_documents backend:", error);
+        // ✅ Fallback response also uses response.create
+        sendClientEvent({
+          type: "response.create",
+          response: {
+            instructions: "Sorry, I couldn't retrieve any document for that question.",
+          },
+        });
+      }
+    }
+  });
+}
+
+
+        // Check for a tool call event with name "retrieve_documents"
+        if (event.type === "tool_call" && event.tool && event.tool.name === "retrieve_documents") {
+          console.log("[DEBUG] retrieve_documents tool call received:", event);
+          try {
+            const args = JSON.parse(event.tool.arguments);
+            const query = args.query;
+            console.log("[DEBUG] Query received for retrieval:", query);
+
+            const response = await fetch("http://localhost:5000/retrieve", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ query }),
+            });
+            if (!response.ok) {
+              throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const result = await response.text();
+            console.log("[DEBUG] Backend returned:", result);
+
+           // ✅ send as response.create
+    const responseEvent = {
+      type: "response.create",
+      response: {
+        instructions: result,
+      },
+    };
+    sendClientEvent(responseEvent);
+
+  } catch (error) {
+    console.error("Error in retrieve_documents tool:", error);
+    sendClientEvent({
+      type: "response.create",
+      response: {
+        instructions: "Sorry, I had trouble retrieving that document.",
+      },
+    });
+  }
+}
+
+        // Log every event for debugging
         if (!event.timestamp) {
           event.timestamp = new Date().toLocaleTimeString();
         }
-
         setEvents((prev) => [event, ...prev]);
       });
 
@@ -147,7 +272,7 @@ export default function App() {
     <>
       <nav className="absolute top-0 left-0 right-0 h-16 flex items-center">
         <div className="flex items-center gap-4 w-full m-4 pb-2 border-0 border-b border-solid border-gray-200">
-          <img style={{ width: "24px" }} src={logo} />
+          <img style={{ width: "24px" }} src={logo} alt="OpenAI logo" />
           <h1>realtime console</h1>
         </div>
       </nav>
