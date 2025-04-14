@@ -4,7 +4,8 @@ import numpy as np
 
 
 #  HARD CODE your OpenAI API key
-openai.api_key =  "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"
+openai.api_key =  "Enter API KEY"
+#"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"
 
 #  Documents to embed and store
 docs = [
