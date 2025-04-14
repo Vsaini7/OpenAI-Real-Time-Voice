@@ -22,6 +22,11 @@ Start the application server with:
 npm run dev
 ```
 
+Run Backend Server
+```bash
+& openai-realtime-console/backend/faiss_server.py
+```
+
 This should start the console application on [http://localhost:3000](http://localhost:3000).
 
 This application is a minimal template that uses [express](https://expressjs.com/) to serve the React frontend contained in the [`/client`](./client) folder. The server is configured to use [vite](https://vitejs.dev/) to build the React frontend.
